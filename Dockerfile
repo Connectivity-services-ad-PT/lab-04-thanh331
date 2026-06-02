@@ -1,44 +1,24 @@
-# syntax=docker/dockerfile:1.7
-
-FROM python:3.11-slim AS builder
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-WORKDIR /build
-
-RUN python -m venv /opt/venv
-
-COPY requirements.txt .
-
-RUN /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
-
-
-FROM python:3.11-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PATH="/opt/venv/bin:$PATH"
-ENV APP_HOST=0.0.0.0
-ENV APP_PORT=8000
-ENV AUTH_TOKEN=local-dev-token
+FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app appuser
+# Sao chép và cài đặt thư viện phụ thuộc trước để tận dụng cache của Docker
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --from=builder /opt/venv /opt/venv
-COPY src/ ./src/
+# Sao chép toàn bộ mã nguồn vào container
+COPY . .
 
-RUN chown -R appuser:appgroup /app
-
+# Rubric Ràng buộc bảo mật: Tạo và chuyển sang chạy bằng tài khoản Non-Root User
+RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
+# Mở cổng 8000 của ứng dụng
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()" || exit 1
+# Rubric Ràng buộc vận hành: HEALTHCHECK tự động kiểm tra endpoint /health định kỳ
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-CMD ["sh", "-c", "uvicorn iot_app.main:app --app-dir src --host ${APP_HOST} --port ${APP_PORT}"]
+# Lệnh khởi chạy ứng dụng uvicorn backend
+CMD ["uvicorn", "iot_app.main:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]

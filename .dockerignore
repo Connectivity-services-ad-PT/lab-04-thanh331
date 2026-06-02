@@ -1,5 +1,6 @@
 .git
 .github
+.gitignore
 .venv
 __pycache__
 *.pyc
@@ -19,3 +20,4 @@ dist
 build
 .coverage
 htmlcov
+package-lock.json

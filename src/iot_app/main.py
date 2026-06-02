@@ -1,265 +1,70 @@
-import os
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Dict, List, Optional
-
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI, Response, Header, Query, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from datetime import datetime
+import uuid
 
+app = FastAPI(title="B5 - Analytics Service API")
 
-SERVICE_NAME = os.getenv("SERVICE_NAME", "iot-ingestion")
-SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.4.0")
-AUTH_TOKEN = os.getenv("AUTH_TOKEN", "local-dev-token")
+# Cấu hình Token cứng để test bảo mật
+VALID_TOKEN = "local-dev-token-analytics-xyz"
 
-
-app = FastAPI(
-    title="FIT4110 Lab 04 - IoT Ingestion Service",
-    version=SERVICE_VERSION,
-    description=(
-        "Dockerized IoT Ingestion API aligned with the Lab 03 OpenAPI/Postman contract."
-    ),
-)
-
-
-class SensorMetric(str, Enum):
-    temperature = "temperature"
-    humidity = "humidity"
-    motion = "motion"
-    smoke = "smoke"
-
-
-class SensorUnit(str, Enum):
-    celsius = "celsius"
-    percent = "percent"
-    boolean = "boolean"
-    ppm = "ppm"
-
-
-class ProblemDetails(BaseModel):
-    type: str = "about:blank"
-    title: str
-    status: int = Field(..., ge=400, le=599)
-    detail: str
-    instance: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    status: str
-    service: str
-    version: str
-
-
-class SensorReadingCreate(BaseModel):
-    device_id: str = Field(..., min_length=3, examples=["ESP32-LAB-A01"])
-    metric: SensorMetric = Field(..., examples=["temperature"])
-    value: float = Field(
-        ...,
-        ge=-40,
-        le=80,
-        description="Boundary range used in Lab 03 and Lab 04: -40 to 80.",
-        examples=[31.5],
-    )
-    unit: Optional[SensorUnit] = Field(default=None, examples=["celsius"])
-    timestamp: str = Field(..., examples=["2026-05-13T08:30:00+07:00"])
-
-
-class SensorReading(BaseModel):
-    reading_id: str
-    device_id: str
-    metric: SensorMetric
-    value: float
-    unit: Optional[SensorUnit] = None
-    timestamp: str
-    created_at: str
-
-
-class SensorReadingCreated(BaseModel):
-    reading_id: str
-    device_id: str
-    metric: SensorMetric
-    accepted: bool
-    created_at: str
-
-
-READINGS: List[Dict] = []
-
-
-def build_problem(
-    *,
-    status_code: int,
-    title: str,
-    detail: str,
-    instance: Optional[str] = None,
-    problem_type: str = "about:blank",
-) -> Dict:
-    problem = {
-        "type": problem_type,
-        "title": title,
-        "status": status_code,
-        "detail": detail,
-    }
-    if instance:
-        problem["instance"] = instance
-    return problem
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    if isinstance(exc.detail, dict):
-        problem = exc.detail
-    else:
-        problem = build_problem(
-            status_code=exc.status_code,
-            title=status.HTTP_STATUS_CODES.get(exc.status_code, "HTTP Error"),
-            detail=str(exc.detail),
-            instance=str(request.url.path),
-        )
-
-    problem.setdefault("status", exc.status_code)
-    problem.setdefault("title", status.HTTP_STATUS_CODES.get(exc.status_code, "HTTP Error"))
-    problem.setdefault("type", "about:blank")
-    problem.setdefault("detail", "Request failed")
-    problem.setdefault("instance", str(request.url.path))
-
+def get_problem_details(title: str, status_code: int, detail: str, instance: str):
     return JSONResponse(
-        status_code=exc.status_code,
-        content=problem,
-        media_type="application/problem+json",
-        headers=getattr(exc, "headers", None),
+        status_code=status_code,
+        content={
+            "type": f"https://api.smartcampus.edu.vn/errors/{status_code}",
+            "title": title,
+            "status": status_code,
+            "detail": detail,
+            "instance": f"https://api.smartcampus.edu.vn{instance}"
+        },
+        headers={"Content-Type": "application/problem+json"}
     )
 
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    first_error = exc.errors()[0] if exc.errors() else {}
-    location = ".".join(str(item) for item in first_error.get("loc", []))
-    message = first_error.get("msg", "Request validation error")
-    detail = f"{location}: {message}" if location else message
-
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=build_problem(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            title="Validation error",
-            detail=detail,
-            instance=str(request.url.path),
-            problem_type="https://smart-campus.local/problems/validation-error",
-        ),
-        media_type="application/problem+json",
-    )
-
-
-def verify_bearer_token(authorization: Optional[str] = Header(default=None)) -> None:
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=build_problem(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                title="Unauthorized",
-                detail="Missing Authorization header",
-                problem_type="https://smart-campus.local/problems/unauthorized",
-            ),
-        )
-
-    expected = f"Bearer {AUTH_TOKEN}"
-    if authorization != expected:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=build_problem(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                title="Unauthorized",
-                detail="Invalid bearer token",
-                problem_type="https://smart-campus.local/problems/unauthorized",
-            ),
-        )
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def next_reading_id() -> str:
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return f"R-{today}-{len(READINGS) + 1:04d}"
-
-
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        service=SERVICE_NAME,
-        version=SERVICE_VERSION,
-    )
-
-
-@app.post(
-    "/readings",
-    response_model=SensorReadingCreated,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_bearer_token)],
-    responses={
-        401: {"model": ProblemDetails},
-        422: {"model": ProblemDetails},
-        429: {"model": ProblemDetails},
-    },
-)
-def create_reading(payload: SensorReadingCreate, response: Response) -> SensorReadingCreated:
-    if payload.metric == SensorMetric.temperature and payload.value >= 70:
-        response.headers["X-Warning"] = "high-temperature"
-
-    reading_id = next_reading_id()
-    created_at = now_iso()
-
-    item = {
-        "reading_id": reading_id,
-        "device_id": payload.device_id,
-        "metric": payload.metric.value,
-        "value": payload.value,
-        "unit": payload.unit.value if payload.unit else None,
-        "timestamp": payload.timestamp,
-        "created_at": created_at,
+@app.get("/health")
+def check_health():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
     }
-    READINGS.append(item)
 
-    return SensorReadingCreated(
-        reading_id=reading_id,
-        device_id=payload.device_id,
-        metric=payload.metric,
-        accepted=True,
-        created_at=created_at,
-    )
+@app.get("/api/v1/analytics/summary")
+def get_dashboard_summary(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        return get_problem_details("Unauthorized", 401, "Lỗi xác thực do thiếu hoặc sai định dạng Token", "/api/v1/analytics/summary")
+    
+    token = authorization.split(" ")[1]
+    if token != VALID_TOKEN:
+        return get_problem_details("Unauthorized", 401, "Token không hợp lệ hoặc đã hết hạn", "/api/v1/analytics/summary")
 
+    return {
+        "total_records": 12540,
+        "system_efficiency": 94.5,
+        "last_updated_by": "b5_processor"
+    }
 
-@app.get("/readings/latest", dependencies=[Depends(verify_bearer_token)])
-def latest_readings(
-    device_id: Optional[str] = Query(default=None),
-    limit: int = Query(default=10, ge=1, le=100),
-) -> Dict[str, List[Dict]]:
-    items = READINGS
+@app.post("/api/v1/analytics/reports", status_code=201)
+def create_analytics_report(payload: dict):
+    # Kiểm tra thiếu trường dữ liệu biên để giả lập lỗi 400 Bad Request
+    if not payload or "start_date" not in payload or "end_date" not in payload:
+        return get_problem_details("Invalid Input Parameters", 400, "Tham số đầu vào thiếu trường bắt buộc.", "/api/v1/analytics/reports")
+    
+    return {
+        "report_id": str(uuid.uuid4()),
+        "status": "pending"
+    }
 
-    if device_id:
-        items = [item for item in items if item["device_id"] == device_id]
-
-    return {"items": items[-limit:]}
-
-
-@app.get("/readings/{reading_id}", dependencies=[Depends(verify_bearer_token)])
-def get_reading(reading_id: str) -> Dict:
-    for item in READINGS:
-        if item["reading_id"] == reading_id:
-            return item
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=build_problem(
-            status_code=status.HTTP_404_NOT_FOUND,
-            title="Not Found",
-            detail=f"Reading {reading_id} does not exist",
-            instance=f"/readings/{reading_id}",
-            problem_type="https://smart-campus.local/problems/not-found",
-        ),
-    )
+@app.get("/api/v1/analytics/anomalies")
+def get_anomaly_events(page: int = Query(1), limit: int = Query(10)):
+    if page < 1 or limit < 1 or limit > 100:
+        return get_problem_details("Invalid Pagination", 400, "Tham số phân trang truyền vào không hợp lệ", "/api/v1/analytics/anomalies")
+        
+    return [
+        {
+            "event_id": str(uuid.uuid4()),
+            "type": "IoTAnomaly",
+            "detected_at": datetime.utcnow().isoformat() + "Z",
+            "sensor_id": "SENSOR-102",
+            "threshold_exceeded": 45.2
+        }
+    ]
