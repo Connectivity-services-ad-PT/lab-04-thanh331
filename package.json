@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "FIT4110 Lab 04 - Docker packaging and Newman verification for Smart Campus services",
   "private": true,
-  "scripts": {
+"scripts": {
     "start": "uvicorn iot_app.main:app --host 0.0.0.0 --port 8000 --app-dir src",
-    "lint:openapi": "npx @stoplight/spectral-cli lint contracts/analytics.openapi.yaml",
+    "lint:openapi": "npx @stoplight/spectral-cli lint contracts/analytics.openapi.yaml --ruleset spectral:oas",
     "test:local": "npx newman run postman/collections/analytics.postman_collection.json -e postman/environments/analytics_local.postman_environment.json -r cli,junit,htmlextra --reporter-htmlextra-export reports/newman-report-local.html --reporter-junit-export reports/newman-report-local.xml"
   },
   "devDependencies": {
