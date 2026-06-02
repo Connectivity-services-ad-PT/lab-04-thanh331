@@ -22,6 +22,7 @@ def get_problem_details(title: str, status_code: int, detail: str, instance: str
     )
 
 @app.get("/health")
+@app.head("/health")
 def check_health():
     return {
         "status": "healthy",
